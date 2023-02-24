@@ -28,6 +28,7 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import io.confluent.connect.jdbc.util.ColumnDefinition;
 import io.confluent.connect.jdbc.util.ColumnId;
+import org.apache.kafka.common.config.AbstractConfig;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Schema;
@@ -53,6 +54,9 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
     public MockSqlServerDatabaseDialect() {
       super(sourceConfigWithUrl("jdbc:jtds:sqlsserver://something"));
     }
+    public MockSqlServerDatabaseDialect(AbstractConfig abstractConfig) {
+      super(abstractConfig);
+    }
     @Override
     public boolean versionWithBreakingDatetimeChange() {
       return true;
@@ -62,6 +66,10 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
   @Override
   protected SqlServerDatabaseDialect createDialect() {
     return new MockSqlServerDatabaseDialect();
+  }
+
+  protected SqlServerDatabaseDialect createSinkDialect() {
+    return new MockSqlServerDatabaseDialect(sinkConfigWithUrl("jdbc:jtds:sqlsserver://something"));
   }
 
   @Test
@@ -203,6 +211,7 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
 
     quoteIdentfiiers = QuoteMethod.NEVER;
     dialect = createDialect();
+
     assertStatements(
         new String[]{
             "ALTER TABLE myTable ADD\n"
@@ -222,6 +231,8 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
 
   @Test
   public void shouldBuildUpsertStatement() {
+    SqlServerDatabaseDialect sinkDialect = createSinkDialect();
+
     assertEquals(
         "merge into [myTable] with (HOLDLOCK) AS target using (select ? AS [id1], ?" +
         " AS [id2], ? AS [columnA], ? AS [columnB], ? AS [columnC], ? AS [columnD])" +
@@ -232,11 +243,11 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
         "[columnB], [columnC], [columnD], [id1], [id2]) values (incoming.[columnA]," +
         "incoming.[columnB],incoming.[columnC],incoming.[columnD],incoming.[id1]," +
         "incoming.[id2]);",
-        dialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
+        sinkDialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
     );
 
     quoteIdentfiiers = QuoteMethod.NEVER;
-    dialect = createDialect();
+    sinkDialect = createSinkDialect();
     assertEquals(
         "merge into myTable with (HOLDLOCK) AS target using (select ? AS id1, ?" +
         " AS id2, ? AS columnA, ? AS columnB, ? AS columnC, ? AS columnD)" +
@@ -247,7 +258,40 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
         "columnB, columnC, columnD, id1, id2) values (incoming.columnA," +
         "incoming.columnB,incoming.columnC,incoming.columnD,incoming.id1," +
         "incoming.id2);",
-        dialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
+        sinkDialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
+    );
+  }
+
+  @Test
+  public void shouldBuildUpsertStatementRespectingHoldlockOption() {
+    SqlServerDatabaseDialect sinkDialect = createSinkDialect();
+
+    assertEquals(
+            "merge into [myTable] with (HOLDLOCK) AS target using (select ? AS [id1], ?" +
+                    " AS [id2], ? AS [columnA], ? AS [columnB], ? AS [columnC], ? AS [columnD])" +
+                    " AS incoming on (target.[id1]=incoming.[id1] and target.[id2]=incoming" +
+                    ".[id2]) when matched then update set [columnA]=incoming.[columnA]," +
+                    "[columnB]=incoming.[columnB],[columnC]=incoming.[columnC]," +
+                    "[columnD]=incoming.[columnD] when not matched then insert ([columnA], " +
+                    "[columnB], [columnC], [columnD], [id1], [id2]) values (incoming.[columnA]," +
+                    "incoming.[columnB],incoming.[columnC],incoming.[columnD],incoming.[id1]," +
+                    "incoming.[id2]);",
+            sinkDialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
+    );
+
+    useHoldlockInMerge = false;
+    sinkDialect = createSinkDialect();
+    assertEquals(
+            "merge into [myTable] AS target using (select ? AS [id1], ?" +
+                    " AS [id2], ? AS [columnA], ? AS [columnB], ? AS [columnC], ? AS [columnD])" +
+                    " AS incoming on (target.[id1]=incoming.[id1] and target.[id2]=incoming" +
+                    ".[id2]) when matched then update set [columnA]=incoming.[columnA]," +
+                    "[columnB]=incoming.[columnB],[columnC]=incoming.[columnC]," +
+                    "[columnD]=incoming.[columnD] when not matched then insert ([columnA], " +
+                    "[columnB], [columnC], [columnD], [id1], [id2]) values (incoming.[columnA]," +
+                    "incoming.[columnB],incoming.[columnC],incoming.[columnD],incoming.[id1]," +
+                    "incoming.[id2]);",
+            sinkDialect.buildUpsertQueryStatement(tableId, pkColumns, columnsAtoD)
     );
   }
 
@@ -294,71 +338,77 @@ public class SqlServerDatabaseDialectTest extends BaseDialectTest<SqlServerDatab
 
   @Test
   public void upsert1() {
+    SqlServerDatabaseDialect sinkDialect = createSinkDialect();
+
     TableId customer = tableId("Customer");
     assertEquals(
-        "merge into [Customer] with (HOLDLOCK) AS target using (select ? AS [id], ? AS [name], ? " +
-        "AS [salary], ? AS [address]) AS incoming on (target.[id]=incoming.[id]) when matched then update set " +
-        "[name]=incoming.[name],[salary]=incoming.[salary],[address]=incoming" +
-        ".[address] when not matched then insert " +
-        "([name], [salary], [address], [id]) values (incoming.[name],incoming" +
-        ".[salary],incoming.[address],incoming.[id]);",
-        dialect.buildUpsertQueryStatement(
-            customer,
-            columns(customer, "id"),
-            columns(customer, "name", "salary", "address")
-        )
+            "merge into [Customer] with (HOLDLOCK) AS target using (select ? AS [id], ? AS [name], ? " +
+                    "AS [salary], ? AS [address]) AS incoming on (target.[id]=incoming.[id]) when matched then update set " +
+                    "[name]=incoming.[name],[salary]=incoming.[salary],[address]=incoming" +
+                    ".[address] when not matched then insert " +
+                    "([name], [salary], [address], [id]) values (incoming.[name],incoming" +
+                    ".[salary],incoming.[address],incoming.[id]);",
+            sinkDialect.buildUpsertQueryStatement(
+                    customer,
+                    columns(customer, "id"),
+                    columns(customer, "name", "salary", "address")
+            )
     );
 
     quoteIdentfiiers = QuoteMethod.NEVER;
-    dialect = createDialect();
+    sinkDialect = createSinkDialect();
+
     assertEquals(
-        "merge into Customer with (HOLDLOCK) AS target using (select ? AS id, ? AS name, ? " +
-        "AS salary, ? AS address) AS incoming on (target.id=incoming.id) when matched then update set " +
-        "name=incoming.name,salary=incoming.salary,address=incoming" +
-        ".address when not matched then insert " +
-        "(name, salary, address, id) values (incoming.name,incoming" +
-        ".salary,incoming.address,incoming.id);",
-        dialect.buildUpsertQueryStatement(
-            customer,
-            columns(customer, "id"),
-            columns(customer, "name", "salary", "address")
-        )
+            "merge into Customer with (HOLDLOCK) AS target using (select ? AS id, ? AS name, ? " +
+                    "AS salary, ? AS address) AS incoming on (target.id=incoming.id) when matched then update set " +
+                    "name=incoming.name,salary=incoming.salary,address=incoming" +
+                    ".address when not matched then insert " +
+                    "(name, salary, address, id) values (incoming.name,incoming" +
+                    ".salary,incoming.address,incoming.id);",
+            sinkDialect.buildUpsertQueryStatement(
+                    customer,
+                    columns(customer, "id"),
+                    columns(customer, "name", "salary", "address")
+            )
     );
   }
 
   @Test
   public void upsert2() {
+    SqlServerDatabaseDialect sinkDialect = createSinkDialect();
+
     TableId book = new TableId(null, null, "Book");
     assertEquals(
-        "merge into [Book] with (HOLDLOCK) AS target using (select ? AS [author], ? AS [title], ?" +
-        " AS [ISBN], ? AS [year], ? AS [pages])" +
-        " AS incoming on (target.[author]=incoming.[author] and target.[title]=incoming.[title])" +
-        " when matched then update set [ISBN]=incoming.[ISBN],[year]=incoming.[year]," +
-        "[pages]=incoming.[pages] when not " +
-        "matched then insert ([ISBN], [year], [pages], [author], [title]) values (incoming" +
-        ".[ISBN],incoming.[year]," + "incoming.[pages],incoming.[author],incoming.[title]);",
-        dialect.buildUpsertQueryStatement(
-            book,
-            columns(book, "author", "title"),
-            columns(book, "ISBN", "year", "pages")
-        )
+            "merge into [Book] with (HOLDLOCK) AS target using (select ? AS [author], ? AS [title], ?" +
+                    " AS [ISBN], ? AS [year], ? AS [pages])" +
+                    " AS incoming on (target.[author]=incoming.[author] and target.[title]=incoming.[title])" +
+                    " when matched then update set [ISBN]=incoming.[ISBN],[year]=incoming.[year]," +
+                    "[pages]=incoming.[pages] when not " +
+                    "matched then insert ([ISBN], [year], [pages], [author], [title]) values (incoming" +
+                    ".[ISBN],incoming.[year]," + "incoming.[pages],incoming.[author],incoming.[title]);",
+            sinkDialect.buildUpsertQueryStatement(
+                    book,
+                    columns(book, "author", "title"),
+                    columns(book, "ISBN", "year", "pages")
+            )
     );
 
     quoteIdentfiiers = QuoteMethod.NEVER;
-    dialect = createDialect();
+    sinkDialect = createSinkDialect();
+
     assertEquals(
-        "merge into Book with (HOLDLOCK) AS target using (select ? AS author, ? AS title, ?" +
-        " AS ISBN, ? AS year, ? AS pages)" +
-        " AS incoming on (target.author=incoming.author and target.title=incoming.title)" +
-        " when matched then update set ISBN=incoming.ISBN,year=incoming.year," +
-        "pages=incoming.pages when not " +
-        "matched then insert (ISBN, year, pages, author, title) values (incoming" +
-        ".ISBN,incoming.year," + "incoming.pages,incoming.author,incoming.title);",
-        dialect.buildUpsertQueryStatement(
-            book,
-            columns(book, "author", "title"),
-            columns(book, "ISBN", "year", "pages")
-        )
+            "merge into Book with (HOLDLOCK) AS target using (select ? AS author, ? AS title, ?" +
+                    " AS ISBN, ? AS year, ? AS pages)" +
+                    " AS incoming on (target.author=incoming.author and target.title=incoming.title)" +
+                    " when matched then update set ISBN=incoming.ISBN,year=incoming.year," +
+                    "pages=incoming.pages when not " +
+                    "matched then insert (ISBN, year, pages, author, title) values (incoming" +
+                    ".ISBN,incoming.year," + "incoming.pages,incoming.author,incoming.title);",
+            sinkDialect.buildUpsertQueryStatement(
+                    book,
+                    columns(book, "author", "title"),
+                    columns(book, "ISBN", "year", "pages")
+            )
     );
   }
 
