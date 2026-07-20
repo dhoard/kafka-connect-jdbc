@@ -155,7 +155,7 @@ public class JdbcDbWriterTest {
     props.put("insert.mode", "upsert");
     props.put("pk.mode", "record_key");
     props.put("pk.fields", "id");
-    props.put("trim.sensitive.log", "false");
+    props.put(JdbcSinkConfig.TRIM_SENSITIVE_LOG_ENABLED, "true");
     JdbcDbWriter testWriter = newWriterWithMockConnection(props, mockConnection);
     PreparedStatement mockStatement = mock(PreparedStatement.class);
     when(dialect.parseTableIdentifier(any())).thenReturn(mock(TableId.class));
@@ -221,7 +221,8 @@ public class JdbcDbWriterTest {
 
     SQLException thrown = verifyConnectionRollback(
         false,
-        new SQLException(WRITE_CANARY, "42000", 10)
+        new SQLException(WRITE_CANARY, "42000", 10),
+        true
     );
 
     assertTrue(thrown.getMessage().startsWith(REDACTED));
@@ -233,6 +234,26 @@ public class JdbcDbWriterTest {
     String sensitiveLogs = capturedSensitiveLogs();
     assertTrue(sensitiveLogs.contains(WRITE_CANARY));
     assertTrue(sensitiveLogs.contains(ROLLBACK_CANARY));
+  }
+
+  @Test
+  public void writeKeepsRawFailuresWhenSensitiveLogTrimmingDisabled() throws SQLException {
+    captureWriterLogs();
+    captureSensitiveLogs();
+    SQLException writeFailure = new SQLException(WRITE_CANARY, "42000", 10);
+
+    SQLException thrown = verifyConnectionRollback(false, writeFailure, false);
+
+    assertSame(writeFailure, thrown);
+    assertEquals(WRITE_CANARY, thrown.getMessage());
+    assertEquals(1, thrown.getSuppressed().length);
+    assertEquals(ROLLBACK_CANARY, thrown.getSuppressed()[0].getMessage());
+
+    String writerLogs = capturedWriterLogs();
+    assertTrue(writerLogs.contains(WRITE_CANARY));
+    assertTrue(writerLogs.contains(ROLLBACK_CANARY));
+    assertFalse(writerLogs.contains(REDACTED));
+    assertTrue(capturedSensitiveLogs().isEmpty());
   }
 
   @Test
@@ -265,6 +286,14 @@ public class JdbcDbWriterTest {
       boolean succeedOnRollBack,
       SQLException writeFailure
   ) throws SQLException {
+    return verifyConnectionRollback(succeedOnRollBack, writeFailure, true);
+  }
+
+  private SQLException verifyConnectionRollback(
+      boolean succeedOnRollBack,
+      SQLException writeFailure,
+      boolean trimSensitiveLogsEnabled
+  ) throws SQLException {
     Connection mockConnection = mock(Connection.class);
 
     doThrow(writeFailure).when(mockConnection).commit();
@@ -281,6 +310,10 @@ public class JdbcDbWriterTest {
     props.put("insert.mode", "upsert");
     props.put("pk.mode", "record_key");
     props.put("pk.fields", "id"); // assigned name for the primitive key
+    props.put(
+        JdbcSinkConfig.TRIM_SENSITIVE_LOG_ENABLED,
+        String.valueOf(trimSensitiveLogsEnabled)
+    );
 
     JdbcDbWriter writer = newWriterWithMockConnection(props, mockConnection);
 
